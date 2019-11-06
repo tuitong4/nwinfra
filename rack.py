@@ -11,7 +11,7 @@ class Cabinet():
         self.height = height
         self.max_unit = max_unit
         self.name = name
-        self.palce = [ None for i in range(max_unit)]
+        self.place = [ None for i in range(max_unit)]
 
 
 class Room():
@@ -394,17 +394,34 @@ class PhysicalDevice():
         self.cabinet_name = cabinet_name
         self.unit = unit
 
-
-
-
 class ValueMismatch(Exception):
     pass
 
 
 
-def device_placement(cabinets_array, cabinet_parameter=None, netdev_map=None):
+def device_placement(cabinets_array, cabinet_parameter=None, netdevice_placement=None):
     #cabinet_parameter, dict contains cabinet physical information
-
+    # netdevice_placement like :
+    #{
+    #    "cabinet": [
+    #        {
+    #            "device_role": "LC",
+    #            "device_name": "LC-1"
+    #            "device_index" : 1,
+    #            "manufacturer": "H3C",
+    #            "uplink_ports": [],
+    #            "downlink_ports" :[],    
+    #        },
+    #        {
+    #            "device_role": "LA",
+    #            "device_name": "LA-1"
+    #            "device_index" : 1,
+    #            "manufacturer": "H3C",
+    #            "uplink_ports": [],
+    #            "downlink_ports" :[],    
+    #        },
+    #    ]
+    #}
     if cabinet_parameter is not None:
         width = cabinet_parameter["width"]
         length = cabinet_parameter["length"]
@@ -421,52 +438,80 @@ def device_placement(cabinets_array, cabinet_parameter=None, netdev_map=None):
     cabinets = {}
     net_devices = {}
     server_devices = {}
+    exclusive_cabinet = set()
     for row_idx, row in enumerate(cabinets_array):
         for col_idx, item in enumerate(row):
             cabinet_idx = row_idx*100 + col_idx
 
             if item == "":
                 continue
-            cabinet_name, *rest = item.split("/")
+            cabinet_name = item.strip()
             
             if cabinet_name not in cabinets:
                 cabinets[cabinet_name] = Cabinet(cabinet_name, width, length, height, max_unit)
 
+            if cabinet_name in netdevice_placement:
+                for dev_idx, netdev in enumerate(netdevice_placement[cabinet_name]):
+                    dev_name = netdev["device_name"]
+                    dev_role = netdev["device_role"]
 
-            for dev_idx, netdev in enumerate(rest):
-                if netdev not in net_devices:
-                    dev_name, *_dev_idx = netdev.split("-")
-                    net_devices[netdev] = VirtualDevice(name=netdev, role=dev_name)
-                if net_devices[netdev].member is None:
-                    net_devices[netdev].member == list()
-                    _dev = PhysicalDevice(cabinet=cabinet_idx, cabinet_name=cabinet_name, unit=max_unit-dev_idx)
-                    net_devices[netdev].member.append(_dev)
-                    cabinets[cabinet_name].place[max_unit-dev_idx] = _dev
+                    #独占柜子做标记，后面不放服务器
+                    if dev_role in ("LC", "DCI", "WC"):
+                        exclusive_cabinet.add(cabinet_name)
 
+                    if dev_name not in net_devices:
+                        net_devices[dev_name] = VirtualDevice(name=dev_name, 
+                                                            role=dev_role
+                                                            )
+                    if net_devices[dev_name].member is None:
+                        net_devices[dev_name].member = list()
+                        if dev_role == "LC":
+                            _unit = 1
+                        else :
+                            _unit = (max_unit - 1)- dev_idx 
+                        _dev = PhysicalDevice(  cabinet=cabinet_idx, 
+                                                cabinet_name=cabinet_name, 
+                                                unit=_unit,
+                                                uplink_ports=netdev["uplink_ports"],
+                                                downlink_ports=netdev["downlink_ports"]
+                                                )
+
+                        net_devices[dev_name].member.append(_dev)
+                        cabinets[cabinet_name].place[_unit] = _dev
+
+            #网络设备独占的柜子不放服务器
+            if cabinet_name in exclusive_cabinet:
+                continue
+
+            #规划服务器
             for idx in range(access_count):
-                dev_name = "SRV" + cabinet_idx + str(idx+1)
+                dev_name = "SRV" + str(cabinet_idx) + str(idx+1)
                 if dev_name not in server_devices:
-                    server_devices[netdev] = VirtualDevice(name=dev_name, role=dev_name)
-                if net_devices[netdev].member is None:
-                    server_devices[netdev].member == list()
-                    _dev = PhysicalDevice(cabinet=cabinet_idx, cabinet_name=cabinet_name, unit=idx+1)
-                    server_devices[netdev].member.append(_dev)
+                    server_devices[dev_name] = VirtualDevice(name=dev_name, role=dev_name)
+                if server_devices[dev_name].member is None:
+                    server_devices[dev_name].member = list()
+                    _dev = PhysicalDevice(cabinet=cabinet_idx, 
+                                        cabinet_name=cabinet_name, 
+                                        unit=idx+1,
+                                        uplink_ports=["NIC1", "NIC2"]
+                                        )
+                    server_devices[dev_name].member.append(_dev)
                     cabinets[cabinet_name].place[idx+1] = _dev
     #
     #对成员设备排序
     #按照ascii 字符串排序，小的设备作为slot1，大的作为slot2
-    #因为
-    for virtual_device in net_devices:
-        virtual_device.member.sort(key=lambda x: x.cabinet_name, reverse=True)
+    #
+    for _, virtual_device in net_devices.items():
+        virtual_device.member.sort(key=lambda x: x.cabinet_name)
             
     return cabinets, net_devices, server_devices
 
 if __name__ == "__main__":
-    cabinets_columns = [["170", "171", "172/LA", "173", "174", "175", "176", "177/LA", "178", "179", "180", "181", "182/LA", "183", "184", "185/LC", "186", "187/LA", "188", "189"], 
+    cabinets_columns = [["170", "171", "172", "173", "174", "175", "176", "177", "178", "179", "180", "181", "182", "183", "184", "185/LC", "186", "187", "188", "189"], 
 ["", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "",],
-["150", "151", "152/LA", "153", "154", "155", "156", "157/LA", "158", "159", "160", "161", "162/LA", "163", "164", "165", "166", "167/LA", "168", "169"], 
+["150", "151", "152", "153", "154", "155", "156", "157", "158", "159", "160", "161", "162", "163", "164", "165", "166", "167", "168", "169"], 
 ["", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "",],
-["130", "131", "132/LA", "133", "134", "135", "136", "137/LA", "138", "139", "140", "141", "142/LA", "143", "144", "145/LC", "146", "147/LA", "148", "149"]]
+["130", "131", "132", "133", "134", "135", "136", "137", "138", "139", "140", "141", "142", "143", "144", "145/LC", "146", "147", "148", "149"]]
 
     distribution_area = [[1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
                         [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
@@ -474,8 +519,66 @@ if __name__ == "__main__":
                         [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
                         [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]]
 
-    room = Room("02", cabinets=cabinets_columns, distribution_area=distribution_area)
+    netdevice_placement_placement = {
+        "157": [
+            {
+                "device_role": "LC",
+                "device_name": "LC",
+                "device_index" : 1,
+                "manufacturer": "H3C",
+                "uplink_ports": ["F1/0/49", "F1/0/50"],
+                "downlink_ports" :None,    
+            },
+            {
+                "device_role": "MNG",
+                "device_name": "MNG-1",
+                "device_index" : 1,
+                "manufacturer": "H3C",
+                "uplink_ports": ["G1/0/49"],
+                "downlink_ports" :None,    
+            },
+        ],
 
-    distance, path = room.wiring_path(start_cabinet=(0,0), target_cabinet=(2,10), head_cabinet=(0, 19))
+        "177": [
+            {
+                "device_role": "LA",
+                "device_name": "LA-1",
+                "device_index" : 1,
+                "manufacturer": "H3C",
+                "uplink_ports": ["F1/0/49", "F1/0/50"],
+                "downlink_ports" :None,    
+            },
+            {
+                "device_role": "MNG",
+                "device_name": "MNG-2",
+                "device_index" : 1,
+                "manufacturer": "H3C",
+                "uplink_ports": ["G1/0/49"],
+                "downlink_ports" :None,    
+            },
+        ],
 
-    print(distance, path)
+        "137": [
+            {
+                "device_role": "LA",
+                "device_name": "LA-2",
+                "device_index" : 2,
+                "manufacturer": "H3C",
+                "uplink_ports": ["F1/0/49", "F1/0/50"],
+                "downlink_ports" :None,      
+            },
+            {
+                "device_role": "MNG",
+                "device_name": "MNG-2",
+                "device_index" : 2,
+                "manufacturer": "H3C",
+                "uplink_ports": ["G1/0/49"],
+                "downlink_ports" :None,    
+            },
+        ],
+    }
+    #room = Room("02", cabinets=cabinets_columns, distribution_area=distribution_area)
+
+    #distance, path = room.wiring_path(start_cabinet=(0,0), target_cabinet=(2,10), head_cabinet=(0, 19))
+
+    cabinets, netdevice_placements, server_devices = device_placement(cabinets_array=cabinets_columns, netdevice_placement=netdevice_placement_placement)
